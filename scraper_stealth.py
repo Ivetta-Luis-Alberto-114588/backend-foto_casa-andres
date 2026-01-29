@@ -6,6 +6,9 @@ Soporta selección de navegador (Chromium / Brave)
 import asyncio
 import random
 import json
+import logging
+import sys
+from datetime import datetime
 from playwright.async_api import async_playwright
 from langchain_openai import ChatOpenAI
 import os
@@ -13,6 +16,17 @@ from dotenv import load_dotenv
 
 # CRÍTICO: Cargar variables de entorno del .env
 load_dotenv()
+
+# Configurar logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),  # Logs a stdout (visible en Docker)
+        logging.FileHandler('/tmp/scraper.log')  # Logs a archivo en /tmp (accesible en Docker)
+    ]
+)
+logger = logging.getLogger(__name__)
 
 
 MAX_EMAIL_ITEMS = 15
@@ -98,7 +112,7 @@ async def _search_fotocasa(page, city: str, price_max: int = None) -> str:
     5. Aplica filtro de precio máximo si se proporciona
     6. Retorna la URL final
     """
-    print(f"🔍 Buscando en Fotocasa: {city}")
+    logger.info(f"🔍 Buscando en Fotocasa: {city}")
 
     # Buscar input de búsqueda principal
     search_selectors = [
@@ -126,7 +140,7 @@ async def _search_fotocasa(page, city: str, price_max: int = None) -> str:
             is_enabled = await inp.is_enabled(timeout=1000)
 
             if is_visible or is_enabled:
-                print(f"   ✓ Input encontrado con selector: {selector}")
+                logger.info(f"   ✓ Input encontrado con selector: {selector}")
                 await asyncio.sleep(random.uniform(0.5, 1))
 
                 # En modo headless, a veces es mejor usar focus() antes de click()
@@ -139,7 +153,7 @@ async def _search_fotocasa(page, city: str, price_max: int = None) -> str:
                 await inp.click()
                 await asyncio.sleep(random.uniform(0.3, 0.6))
                 await inp.fill(city)
-                print(f"✅ Ciudad '{city}' introducida en: {selector}")
+                logger.info(f"✅ Ciudad '{city}' introducida en: {selector}")
 
                 # Esperar a que aparezca el dropdown de autocompletado
                 print("⏳ Esperando autocompletado...")
@@ -179,51 +193,53 @@ async def _search_fotocasa(page, city: str, price_max: int = None) -> str:
                 print("✅ Navegación a resultados completada")
                 break
         except Exception as e:
-            print(f"⚠️  Selector '{selector}' falló: {e}")
+            logger.debug(f"⚠️  Selector '{selector}' falló: {e}")
             continue
 
     if not search_done:
-        print("❌ No se pudo encontrar el input de búsqueda (búsqueda interactiva falló)")
-        print(f"   URL actual: {page.url}")
+        logger.error("❌ No se pudo encontrar el input de búsqueda (búsqueda interactiva falló)")
+        logger.error(f"   URL actual: {page.url}")
 
         # Guardar screenshot de debug
         try:
-            await page.screenshot(path='fotocasa_search_failed.png')
-            print("   Screenshot guardado: fotocasa_search_failed.png")
-        except:
-            pass
+            screenshot_path = '/tmp/fotocasa_search_failed.png'
+            await page.screenshot(path=screenshot_path)
+            logger.info(f"   Screenshot guardado: {screenshot_path}")
+        except Exception as e:
+            logger.warning(f"   No se pudo guardar screenshot: {e}")
 
         # Guardar HTML de debug
         try:
             page_html = await page.content()
-            with open('fotocasa_search_failed.html', 'w', encoding='utf-8') as f:
+            html_path = '/tmp/fotocasa_search_failed.html'
+            with open(html_path, 'w', encoding='utf-8') as f:
                 f.write(page_html[:5000])
-            print("   HTML guardado: fotocasa_search_failed.html")
-        except:
-            pass
+            logger.info(f"   HTML guardado: {html_path}")
+        except Exception as e:
+            logger.warning(f"   No se pudo guardar HTML: {e}")
 
         # Intentar búsqueda por URL como fallback
-        print("🔄 Intentando búsqueda alternativa por URL directa...")
+        logger.warning("🔄 Intentando búsqueda alternativa por URL directa...")
         try:
             from urllib.parse import quote
             # Construir URL de búsqueda directa para fotocasa
             search_url = f"https://www.fotocasa.es/es/comprar/viviendas/datos-{quote(city)}"
-            print(f"   Navegando a: {search_url}")
+            logger.info(f"   Navegando a: {search_url}")
             await page.goto(search_url, wait_until='load', timeout=20000)
             await asyncio.sleep(random.uniform(2, 3))
-            print(f"✓ Búsqueda por URL completada")
+            logger.info(f"✓ Búsqueda por URL completada exitosamente")
             return search_url
         except Exception as e:
-            print(f"⚠️  Búsqueda por URL también falló: {e}")
+            logger.error(f"⚠️  Búsqueda por URL también falló: {e}")
             return page.url
 
     # Cerrar popups ANTES de continuar
-    print("🚫 Cerrando popups...")
+    logger.info("🚫 Cerrando popups...")
     await _close_fotocasa_popups(page)
 
     # Obtener URL actual (fotocasa ya nos llevó a la URL correcta)
     current_url = page.url
-    print(f"📍 URL actual después de búsqueda: {current_url}")
+    logger.info(f"📍 URL actual después de búsqueda: {current_url}")
 
     # Aplicar filtros a la URL actual
     from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
@@ -548,17 +564,17 @@ async def scrape_with_stealth(url: str, search_term: str, openai_key: str, brows
         page_html = await page.content()
         page_text = await page.inner_text('body')
 
-        print(f"📊 Contenido capturado:")
-        print(f"   - HTML: {len(page_html)} caracteres")
-        print(f"   - Texto visible: {len(page_text)} caracteres")
+        logger.info(f"📊 Contenido capturado:")
+        logger.info(f"   - HTML: {len(page_html)} caracteres")
+        logger.info(f"   - Texto visible: {len(page_text)} caracteres")
 
         # Verificar si la página tiene contenido de búsqueda o es la página principal
         is_search_results_page = (
             "fotocasa" in page_text.lower() and
             ("vivienda" in page_text.lower() or "anuncio" in page_text.lower())
         )
-        print(f"   - ¿Página de resultados?: {is_search_results_page}")
-        print(f"   - URL actual: {nav_url if 'nav_url' in locals() else url}")
+        logger.info(f"   - ¿Página de resultados?: {is_search_results_page}")
+        logger.info(f"   - URL actual: {nav_url if 'nav_url' in locals() else url}")
 
         # Detectar CAPTCHA
         captcha_keywords = ['captcha', 'verification', 'verify you', 'too many requests',

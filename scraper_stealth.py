@@ -13,6 +13,7 @@ from playwright.async_api import async_playwright
 from langchain_openai import ChatOpenAI
 import os
 from dotenv import load_dotenv
+import pathlib
 
 # CRÍTICO: Cargar variables de entorno del .env
 load_dotenv()
@@ -27,6 +28,45 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+
+# Función para verificar que /tmp es escribible
+def verify_tmp_writable():
+    """Verifica que podemos escribir en /tmp y logguea el resultado"""
+    try:
+        test_file = pathlib.Path('/tmp/test_write_verify.txt')
+        test_file.write_text('test', encoding='utf-8')
+        test_file.unlink()  # Eliminar archivo de prueba
+        logger.info("✓ /tmp es escribible y accesible")
+        return True
+    except PermissionError as e:
+        logger.error(f"❌ Permiso denegado para escribir en /tmp: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"❌ Error verificando /tmp: {e}")
+        return False
+
+
+# Función auxiliar para guardar archivos con validación
+async def save_file_safe(filepath: str, content: str) -> bool:
+    """Guarda un archivo y verifica que se guardó correctamente"""
+    try:
+        path = pathlib.Path(filepath)
+        # Crear directorio si no existe
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        path.write_text(content, encoding='utf-8')
+
+        # Verificar que se guardó
+        if path.exists() and path.stat().st_size > 0:
+            logger.info(f"   ✓ Archivo guardado correctamente: {filepath} ({path.stat().st_size} bytes)")
+            return True
+        else:
+            logger.error(f"   ❌ Archivo no se guardó correctamente: {filepath}")
+            return False
+    except Exception as e:
+        logger.error(f"   ❌ Error guardando {filepath}: {e}")
+        return False
 
 
 MAX_EMAIL_ITEMS = 15
@@ -204,19 +244,23 @@ async def _search_fotocasa(page, city: str, price_max: int = None) -> str:
         try:
             screenshot_path = '/tmp/fotocasa_search_failed.png'
             await page.screenshot(path=screenshot_path)
-            logger.info(f"   Screenshot guardado: {screenshot_path}")
+            # Verificar que se guardó
+            if pathlib.Path(screenshot_path).exists():
+                logger.info(f"   ✓ Screenshot guardado: {screenshot_path} ({pathlib.Path(screenshot_path).stat().st_size} bytes)")
+            else:
+                logger.error(f"   ❌ Screenshot NO se guardó: {screenshot_path}")
         except Exception as e:
-            logger.warning(f"   No se pudo guardar screenshot: {e}")
+            logger.error(f"   ❌ Error guardando screenshot: {e}")
 
         # Guardar HTML de debug
         try:
             page_html = await page.content()
             html_path = '/tmp/fotocasa_search_failed.html'
-            with open(html_path, 'w', encoding='utf-8') as f:
-                f.write(page_html[:5000])
-            logger.info(f"   HTML guardado: {html_path}")
+            success = await save_file_safe(html_path, page_html[:5000])
+            if not success:
+                logger.error(f"   ⚠️  Problema guardando HTML a {html_path}")
         except Exception as e:
-            logger.warning(f"   No se pudo guardar HTML: {e}")
+            logger.error(f"   ❌ Error preparando HTML: {e}")
 
         # Intentar búsqueda por URL como fallback
         logger.warning("🔄 Intentando búsqueda alternativa por URL directa...")
@@ -379,7 +423,12 @@ async def scrape_with_stealth(url: str, search_term: str, openai_key: str, brows
     retry_count: contador interno de reintentos (máximo 2)
     """
     if retry_count > 0:
-        print(f"🔄 Reintento {retry_count}/{MAX_RETRIES}")
+        logger.info(f"🔄 Reintento {retry_count}/{MAX_RETRIES}")
+
+    # Verificar que /tmp es escribible (solo en primer intento)
+    if retry_count == 0:
+        logger.info("🔍 Verificando permisos de /tmp...")
+        verify_tmp_writable()
 
     playwright = None
     browser_obj = None
@@ -722,12 +771,10 @@ async def scrape_with_stealth(url: str, search_term: str, openai_key: str, brows
             logger.error(f"   --- FIN HTML ---")
 
             # También guardarlo en archivo para backup
-            try:
-                with open('/tmp/fotocasa_low_content.html', 'w', encoding='utf-8') as f:
-                    f.write(page_html)
-                logger.info("   HTML también guardado en archivo: /tmp/fotocasa_low_content.html")
-            except Exception as e:
-                logger.warning(f"   No se pudo guardar HTML en archivo: {e}")
+            debug_html_path = '/tmp/fotocasa_low_content.html'
+            success = await save_file_safe(debug_html_path, page_html)
+            if not success:
+                logger.error(f"   ❌ No se pudo guardar HTML a {debug_html_path}")
 
         # Detectar CAPTCHA
         captcha_keywords = ['captcha', 'verification', 'verify you', 'too many requests',
@@ -792,16 +839,18 @@ async def scrape_with_stealth(url: str, search_term: str, openai_key: str, brows
         # Guardar contenido para debug
         try:
             debug_file = '/tmp/fotocasa_content_debug.txt'
-            with open(debug_file, 'w', encoding='utf-8') as f:
-                f.write(f"URL: {nav_url if 'nav_url' in locals() else url}\n")
-                f.write(f"Longitud total texto: {len(page_text)}\n")
-                f.write(f"Enlaces encontrados: {len(links_info)}\n")
-                f.write(f"Longitud truncada: {len(truncated_text)}\n")
-                f.write("="*80 + "\n")
-                f.write(truncated_text)
-            logger.info(f"📝 Contenido guardado en: {debug_file}")
+            debug_content = f"URL: {nav_url if 'nav_url' in locals() else url}\n"
+            debug_content += f"Longitud total texto: {len(page_text)}\n"
+            debug_content += f"Enlaces encontrados: {len(links_info)}\n"
+            debug_content += f"Longitud truncada: {len(truncated_text)}\n"
+            debug_content += "="*80 + "\n"
+            debug_content += truncated_text
+
+            success = await save_file_safe(debug_file, debug_content)
+            if not success:
+                logger.warning(f"   ⚠️  No se guardó contenido de debug correctamente")
         except Exception as e:
-            logger.warning(f"   No se pudo guardar debug file: {e}")
+            logger.error(f"   ❌ Error preparando contenido de debug: {e}")
 
         # Prompt que pide JSON estructurado
         search_context = f'Esta es una página de resultados de Fotocasa con viviendas en venta en: "{search_term}"\n' if search_term and search_term.strip() else ''

@@ -106,16 +106,36 @@ async def _search_fotocasa(page, city: str, price_max: int = None) -> str:
         'input[placeholder*="municipio"]',
         'input[placeholder*="barrio"]',
         'input[type="search"]',
+        'input[placeholder*="Búsqueda"]',
         '#search-input',
         '[data-testid="search-input"]',
+        'input[name*="search"]',
+        'input[id*="search"]',
     ]
 
     search_done = False
     for selector in search_selectors:
         try:
             inp = page.locator(selector).first
-            if await inp.is_visible(timeout=2000):
+            # En modo headless, usar is_enabled() en lugar de is_visible()
+            try:
+                is_visible = await inp.is_visible(timeout=1000)
+            except:
+                is_visible = False
+
+            is_enabled = await inp.is_enabled(timeout=1000)
+
+            if is_visible or is_enabled:
+                print(f"   ✓ Input encontrado con selector: {selector}")
                 await asyncio.sleep(random.uniform(0.5, 1))
+
+                # En modo headless, a veces es mejor usar focus() antes de click()
+                try:
+                    await inp.focus()
+                    await asyncio.sleep(0.2)
+                except:
+                    pass
+
                 await inp.click()
                 await asyncio.sleep(random.uniform(0.3, 0.6))
                 await inp.fill(city)
@@ -159,12 +179,43 @@ async def _search_fotocasa(page, city: str, price_max: int = None) -> str:
                 print("✅ Navegación a resultados completada")
                 break
         except Exception as e:
-            print(f"⚠️  Selector {selector} falló: {e}")
+            print(f"⚠️  Selector '{selector}' falló: {e}")
             continue
 
     if not search_done:
-        print("❌ No se pudo encontrar el input de búsqueda")
-        return page.url
+        print("❌ No se pudo encontrar el input de búsqueda (búsqueda interactiva falló)")
+        print(f"   URL actual: {page.url}")
+
+        # Guardar screenshot de debug
+        try:
+            await page.screenshot(path='fotocasa_search_failed.png')
+            print("   Screenshot guardado: fotocasa_search_failed.png")
+        except:
+            pass
+
+        # Guardar HTML de debug
+        try:
+            page_html = await page.content()
+            with open('fotocasa_search_failed.html', 'w', encoding='utf-8') as f:
+                f.write(page_html[:5000])
+            print("   HTML guardado: fotocasa_search_failed.html")
+        except:
+            pass
+
+        # Intentar búsqueda por URL como fallback
+        print("🔄 Intentando búsqueda alternativa por URL directa...")
+        try:
+            from urllib.parse import quote
+            # Construir URL de búsqueda directa para fotocasa
+            search_url = f"https://www.fotocasa.es/es/comprar/viviendas/datos-{quote(city)}"
+            print(f"   Navegando a: {search_url}")
+            await page.goto(search_url, wait_until='load', timeout=20000)
+            await asyncio.sleep(random.uniform(2, 3))
+            print(f"✓ Búsqueda por URL completada")
+            return search_url
+        except Exception as e:
+            print(f"⚠️  Búsqueda por URL también falló: {e}")
+            return page.url
 
     # Cerrar popups ANTES de continuar
     print("🚫 Cerrando popups...")
@@ -500,6 +551,14 @@ async def scrape_with_stealth(url: str, search_term: str, openai_key: str, brows
         print(f"📊 Contenido capturado:")
         print(f"   - HTML: {len(page_html)} caracteres")
         print(f"   - Texto visible: {len(page_text)} caracteres")
+
+        # Verificar si la página tiene contenido de búsqueda o es la página principal
+        is_search_results_page = (
+            "fotocasa" in page_text.lower() and
+            ("vivienda" in page_text.lower() or "anuncio" in page_text.lower())
+        )
+        print(f"   - ¿Página de resultados?: {is_search_results_page}")
+        print(f"   - URL actual: {nav_url if 'nav_url' in locals() else url}")
 
         # Detectar CAPTCHA
         captcha_keywords = ['captcha', 'verification', 'verify you', 'too many requests',

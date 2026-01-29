@@ -241,6 +241,13 @@ async def _search_fotocasa(page, city: str, price_max: int = None) -> str:
             logger.info(f"   Navegando a: {search_url}")
             await page.goto(search_url, wait_until='load', timeout=20000)
 
+            # Verificar qué se cargó
+            page_text_check = await page.inner_text('body')
+            logger.info(f"   Contenido inicial después de navegar: {len(page_text_check)} caracteres")
+            if len(page_text_check) < 500:
+                logger.error(f"   ❌ ALERTA: Contenido muy pequeño! Posible bloqueo de Cloudflare")
+                logger.error(f"   Texto recibido: {page_text_check[:500]}")
+
             # Esperar a que carguen los anuncios (articles)
             logger.info("   ⏳ Esperando carga de anuncios...")
             try:
@@ -637,17 +644,21 @@ async def scrape_with_stealth(url: str, search_term: str, openai_key: str, brows
         logger.info(f"   - ¿Página de resultados?: {is_search_results_page}")
         logger.info(f"   - URL actual: {nav_url if 'nav_url' in locals() else url}")
 
-        # Debug: guardar HTML capturado para análisis
+        # Debug: loguear HTML capturado para análisis
         if len(page_text) < 500:
-            logger.warning(f"   ⚠️  Contenido muy pequeño ({len(page_text)} chars), guardando HTML para debug")
+            logger.error(f"   ⚠️  ADVERTENCIA: Contenido muy pequeño ({len(page_text)} chars)")
+            logger.error(f"   Esto sugiere que Cloudflare/Fotocasa está bloqueando la request")
+            logger.error(f"   HTML COMPLETO RECIBIDO (primeros 3000 caracteres):")
+            logger.error(f"   {page_html[:3000]}")
+            logger.error(f"   --- FIN HTML ---")
+
+            # También guardarlo en archivo para backup
             try:
                 with open('/tmp/fotocasa_low_content.html', 'w', encoding='utf-8') as f:
                     f.write(page_html)
-                logger.info("   HTML guardado en: /tmp/fotocasa_low_content.html")
-                # Log primeras líneas del HTML
-                logger.info(f"   HTML preview: {page_html[:300]}...")
+                logger.info("   HTML también guardado en archivo: /tmp/fotocasa_low_content.html")
             except Exception as e:
-                logger.warning(f"   No se pudo guardar HTML: {e}")
+                logger.warning(f"   No se pudo guardar HTML en archivo: {e}")
 
         # Detectar CAPTCHA
         captcha_keywords = ['captcha', 'verification', 'verify you', 'too many requests',

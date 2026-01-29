@@ -239,7 +239,15 @@ async def _search_fotocasa(page, city: str, price_max: int = None) -> str:
 
             search_url = f"{base_url}?{urlencode(params)}"
             logger.info(f"   Navegando a: {search_url}")
-            await page.goto(search_url, wait_until='load', timeout=20000)
+
+            # Esperar a que se preparen las cookies antes de navegar
+            await asyncio.sleep(random.uniform(1, 2))
+
+            # Navegar a URL de búsqueda
+            await page.goto(search_url, wait_until='domcontentloaded', timeout=20000)
+
+            # Esperar a que se cargue el contenido
+            await asyncio.sleep(random.uniform(2, 3))
 
             # Verificar qué se cargó
             page_text_check = await page.inner_text('body')
@@ -247,6 +255,21 @@ async def _search_fotocasa(page, city: str, price_max: int = None) -> str:
             if len(page_text_check) < 500:
                 logger.error(f"   ❌ ALERTA: Contenido muy pequeño! Posible bloqueo de Cloudflare")
                 logger.error(f"   Texto recibido: {page_text_check[:500]}")
+
+                # Intentar inyectar script para marcar como usuario español
+                logger.info("   🔧 Intentando inyectar marcadores de españa...")
+                try:
+                    await page.evaluate("""
+                        // Marcar como usuario de España
+                        document.documentElement.lang = 'es';
+                        Object.defineProperty(navigator, 'language', {value: 'es-ES'});
+                        // Aceptar geetest implícitamente
+                        localStorage.setItem('_geetest_comscore_ok', '1');
+                        localStorage.setItem('geetest_user_country', 'ES');
+                    """)
+                    logger.info("   ✓ Scripts inyectados")
+                except:
+                    pass
 
             # Esperar a que carguen los anuncios (articles)
             logger.info("   ⏳ Esperando carga de anuncios...")
@@ -425,7 +448,7 @@ async def scrape_with_stealth(url: str, search_term: str, openai_key: str, brows
             )
             browser_name = "Chromium"
 
-        # Crear context
+        # Crear context con configuración para aceptar cookies
         context = await browser_obj.new_context(
             viewport={'width': 1920, 'height': 1080},
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -438,6 +461,13 @@ async def scrape_with_stealth(url: str, search_term: str, openai_key: str, brows
             is_mobile=False,
             has_touch=False,
             accept_downloads=False,
+            extra_http_headers={
+                'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+            }
         )
 
         # Scripts ANTI-DETECCIÓN
@@ -500,11 +530,11 @@ async def scrape_with_stealth(url: str, search_term: str, openai_key: str, brows
         logger.info(f"🥷 Navegando a {url} con STEALTH MODE usando {browser_name}...")
 
         # Navegar con timeout generoso
-        await page.goto(url, wait_until='networkidle', timeout=30000)
+        await page.goto(url, wait_until='domcontentloaded', timeout=30000)
 
         # MANEJAR BANNER DE COOKIES / CONSENTIMIENTO GDPR
-        logger.info("🍪 Buscando banner de cookies...")
-        await asyncio.sleep(random.uniform(1, 2))
+        logger.info("🍪 Buscando y aceptando banner de cookies...")
+        await asyncio.sleep(random.uniform(2, 3))  # Esperar más para que cargue el banner
 
         cookie_accepted = False
         # Selectores comunes para botones de aceptar cookies
@@ -524,23 +554,62 @@ async def scrape_with_stealth(url: str, search_term: str, openai_key: str, brows
             '[data-testid="TcfAccept"]',
             '#didomi-notice-agree-button',
             '.css-1hy2vtq',  # fotocasa específico
+            # Más selectores específicos para Fotocasa
+            '[class*="cookie"]button',
+            '[class*="consent"]button',
+            'button[data-testid*="accept"]',
         ]
 
         for selector in cookie_selectors:
             try:
                 btn = page.locator(selector).first
-                if await btn.is_visible(timeout=500):
+                is_visible = False
+                try:
+                    is_visible = await btn.is_visible(timeout=500)
+                except:
+                    pass
+
+                if is_visible:
                     await asyncio.sleep(random.uniform(0.3, 0.8))
                     await btn.click()
                     cookie_accepted = True
-                    print(f"✅ Cookie banner aceptado con: {selector}")
-                    await asyncio.sleep(random.uniform(1, 2))
+                    logger.info(f"✅ Cookie banner aceptado con: {selector}")
+                    await asyncio.sleep(random.uniform(2, 3))
                     break
-            except:
+            except Exception as e:
+                logger.debug(f"   Selector '{selector}' no funcionó: {e}")
                 continue
 
+        # Si no se encontró banner, inyectar script para marcar cookies como aceptadas
         if not cookie_accepted:
-            print("ℹ️  No se detectó banner de cookies (o ya fue aceptado)")
+            logger.info("🔧 Inyectando script para aceptar cookies vía localStorage...")
+            try:
+                await page.evaluate("""
+                    // Marcar cookies como aceptadas en diferentes servicios
+                    localStorage.setItem('cookieConsent', 'true');
+                    localStorage.setItem('fotocasa_cookies_accepted', 'true');
+                    sessionStorage.setItem('cookieConsent', 'true');
+
+                    // Intentar aceptar via Didomi
+                    if (window.didomiOnReady) {
+                        window.didomiOnReady.forEach(fn => fn());
+                    }
+
+                    // Intentar aceptar via OneTrust
+                    if (window.OneTrust && window.OneTrust.IsAlertBoxClosed) {
+                        window.OneTrust.IsAlertBoxClosed();
+                    }
+
+                    // Marcar que fuimos por Spain/España
+                    localStorage.setItem('country', 'ES');
+                    localStorage.setItem('language', 'es');
+                """)
+                logger.info("   ✓ Scripts de cookies inyectados")
+            except Exception as e:
+                logger.warning(f"   ⚠️  No se pudo inyectar scripts de cookies: {e}")
+
+        # Esperar a que las cookies se procesen
+        await asyncio.sleep(random.uniform(2, 3))
 
         # REALIZAR BÚSQUEDA INTERACTIVA en fotocasa.es
         nav_url = url

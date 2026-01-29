@@ -221,9 +221,23 @@ async def _search_fotocasa(page, city: str, price_max: int = None) -> str:
         # Intentar búsqueda por URL como fallback
         logger.warning("🔄 Intentando búsqueda alternativa por URL directa...")
         try:
-            from urllib.parse import quote
-            # Construir URL de búsqueda directa para fotocasa
-            search_url = f"https://www.fotocasa.es/es/comprar/viviendas/datos-{quote(city)}"
+            from urllib.parse import urlencode
+
+            # Construir URL de búsqueda directa para fotocasa con formato correcto
+            # Formato: https://www.fotocasa.es/es/comprar/viviendas/{ciudad}/todas-las-zonas/l
+            city_slug = city.lower().replace(' ', '-')
+            base_url = f"https://www.fotocasa.es/es/comprar/viviendas/{city_slug}/todas-las-zonas/l"
+
+            # Agregar parámetros de filtrado
+            params = {
+                'sortType': 'price',
+                'sortOrderDesc': 'false'
+            }
+
+            if price_max is not None:
+                params['maxPrice'] = str(price_max)
+
+            search_url = f"{base_url}?{urlencode(params)}"
             logger.info(f"   Navegando a: {search_url}")
             await page.goto(search_url, wait_until='load', timeout=20000)
             await asyncio.sleep(random.uniform(2, 3))

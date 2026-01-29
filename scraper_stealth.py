@@ -240,6 +240,16 @@ async def _search_fotocasa(page, city: str, price_max: int = None) -> str:
             search_url = f"{base_url}?{urlencode(params)}"
             logger.info(f"   Navegando a: {search_url}")
             await page.goto(search_url, wait_until='load', timeout=20000)
+
+            # Esperar a que carguen los anuncios (articles)
+            logger.info("   ⏳ Esperando carga de anuncios...")
+            try:
+                # Esperar a que aparezca al menos un artículo
+                await page.wait_for_selector('article', timeout=10000)
+                logger.info("   ✓ Anuncios detectados")
+            except:
+                logger.warning("   ⚠️  Timeout esperando anuncios, continuando...")
+
             await asyncio.sleep(random.uniform(2, 3))
             logger.info(f"✓ Búsqueda por URL completada exitosamente")
             return search_url
@@ -523,26 +533,47 @@ async def scrape_with_stealth(url: str, search_term: str, openai_key: str, brows
             print("ℹ️  URL no es fotocasa o no se especificó ciudad, navegación directa")
 
         # SIMULAR COMPORTAMIENTO HUMANO
-        print("⏱️  Esperando 3-5 segundos (simular lectura)...")
+        logger.info("⏱️  Esperando 3-5 segundos (simular lectura)...")
         await asyncio.sleep(random.uniform(3, 5))
 
+        # Inyectar script para forzar visibilidad de elementos
+        logger.info("🔧 Inyectando scripts para mejorar visibilidad...")
+        try:
+            await page.evaluate("""
+                // Forzar visibilidad de elementos ocultos
+                document.querySelectorAll('[style*="display: none"]').forEach(el => {
+                    el.style.display = 'block';
+                });
+                document.querySelectorAll('[style*="visibility: hidden"]').forEach(el => {
+                    el.style.visibility = 'visible';
+                });
+                // Scroll al inicio para asegurar que se cargue el contenido
+                window.scrollTo(0, 0);
+            """)
+            logger.info("   ✓ Scripts inyectados")
+        except Exception as e:
+            logger.warning(f"   ⚠️  No se pudo inyectar scripts: {e}")
+
         # Scroll progresivo para cargar los primeros 15+ resultados (lazy loading)
-        print("📜 Scroll progresivo para cargar resultados (hasta 15)...")
-        for i in range(10):
+        logger.info("📜 Scroll progresivo para cargar resultados (hasta 15)...")
+        for i in range(15):  # Aumentado de 10 a 15
             # Scrolls más grandes y más frecuentes para cargar lazy loading
-            scroll_amount = random.randint(400, 700)
+            scroll_amount = random.randint(300, 600)
             await page.mouse.wheel(0, scroll_amount)
-            print(f"   Scroll {i+1}/10: {scroll_amount}px")
+            logger.info(f"   Scroll {i+1}/15: {scroll_amount}px")
             # Esperar para que se cargue el contenido lazy
-            await asyncio.sleep(random.uniform(1.5, 2.5))
+            await asyncio.sleep(random.uniform(1, 2))
 
         # Esperar un poco más al final para asegurar que todo cargó
-        print("⏱️  Esperando carga final de resultados...")
-        await asyncio.sleep(random.uniform(2, 3))
+        logger.info("⏱️  Esperando carga final de resultados...")
+        await asyncio.sleep(random.uniform(3, 5))
 
         # Tomar screenshot para debug
-        await page.screenshot(path='fotocasa_results.png')
-        print("📸 Screenshot guardado en: fotocasa_results.png")
+        try:
+            await page.screenshot(path='/tmp/fotocasa_results.png')
+            logger.info("📸 Screenshot guardado en: /tmp/fotocasa_results.png")
+        except Exception as e:
+            logger.warning(f"   No se pudo guardar screenshot: {e}")
 
         # Verificar que hay anuncios cargados en la página
         try:
@@ -553,26 +584,32 @@ async def scrape_with_stealth(url: str, search_term: str, openai_key: str, brows
                 '[class*="PropertyCard"]',
                 '.re-CardPackMinimal',
                 '.re-Card',
+                '[class*="listing"]',
+                '[class*="card"]',
             ]
 
             article_count = 0
+            found_selector = None
             for sel in article_selectors:
                 try:
                     count = await page.locator(sel).count()
                     if count > 0:
                         article_count = count
-                        print(f"✅ Encontrados {count} anuncios con selector: {sel}")
+                        found_selector = sel
+                        logger.info(f"✅ Encontrados {count} anuncios con selector: {sel}")
                         break
-                except:
+                except Exception as e:
+                    logger.debug(f"   Selector '{sel}' no encontrado: {e}")
                     continue
 
             if article_count == 0:
-                print("⚠️  No se encontraron anuncios en la página")
+                logger.error("❌ No se encontraron anuncios en la página")
+                logger.error(f"   Selectores intentados: {', '.join(article_selectors)}")
             elif article_count < 15:
-                print(f"⚠️  Solo se encontraron {article_count} anuncios (menos de 15)")
+                logger.warning(f"⚠️  Solo se encontraron {article_count} anuncios (menos de 15)")
 
         except Exception as e:
-            print(f"⚠️  Error verificando anuncios: {e}")
+            logger.error(f"❌ Error verificando anuncios: {e}")
 
         # Capturar contenido de la página (HTML completo para mejor análisis)
         page_html = await page.content()
@@ -590,6 +627,18 @@ async def scrape_with_stealth(url: str, search_term: str, openai_key: str, brows
         logger.info(f"   - ¿Página de resultados?: {is_search_results_page}")
         logger.info(f"   - URL actual: {nav_url if 'nav_url' in locals() else url}")
 
+        # Debug: guardar HTML capturado para análisis
+        if len(page_text) < 500:
+            logger.warning(f"   ⚠️  Contenido muy pequeño ({len(page_text)} chars), guardando HTML para debug")
+            try:
+                with open('/tmp/fotocasa_low_content.html', 'w', encoding='utf-8') as f:
+                    f.write(page_html)
+                logger.info("   HTML guardado en: /tmp/fotocasa_low_content.html")
+                # Log primeras líneas del HTML
+                logger.info(f"   HTML preview: {page_html[:300]}...")
+            except Exception as e:
+                logger.warning(f"   No se pudo guardar HTML: {e}")
+
         # Detectar CAPTCHA
         captcha_keywords = ['captcha', 'verification', 'verify you', 'too many requests',
                            'verificación', 'demasiadas peticiones', 'robot']
@@ -597,8 +646,12 @@ async def scrape_with_stealth(url: str, search_term: str, openai_key: str, brows
         has_captcha = any(keyword in page_text.lower() for keyword in captcha_keywords)
 
         if has_captcha:
-            print("❌ CAPTCHA/VERIFICACIÓN DETECTADA")
-            await page.screenshot(path='captcha_detected.png')
+            logger.error("❌ CAPTCHA/VERIFICACIÓN DETECTADA")
+            try:
+                await page.screenshot(path='/tmp/captcha_detected.png')
+                logger.info("   Screenshot guardado: /tmp/captcha_detected.png")
+            except:
+                pass
 
             return {
                 "success": False,
@@ -608,7 +661,7 @@ async def scrape_with_stealth(url: str, search_term: str, openai_key: str, brows
             }
 
         # Usar OpenAI para extraer info relevante
-        print("🤖 Analizando contenido con OpenAI...")
+        logger.info("🤖 Analizando contenido con OpenAI...")
 
         llm = ChatOpenAI(
             model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
@@ -620,6 +673,7 @@ async def scrape_with_stealth(url: str, search_term: str, openai_key: str, brows
         links_info = []
         try:
             articles = await page.locator('article').all()
+            logger.info(f"   Artículos encontrados: {len(articles)}")
             for article in articles[:15]:  # Solo los primeros 15
                 try:
                     # Buscar el link dentro del artículo
@@ -633,9 +687,9 @@ async def scrape_with_stealth(url: str, search_term: str, openai_key: str, brows
                             links_info.append(href)
                 except:
                     continue
-            print(f"🔗 Enlaces extraídos: {len(links_info)}")
+            logger.info(f"🔗 Enlaces extraídos: {len(links_info)}")
         except Exception as e:
-            print(f"⚠️  Error extrayendo enlaces: {e}")
+            logger.warning(f"⚠️  Error extrayendo enlaces: {e}")
 
         # Truncar contenido para no exceder tokens (20k para capturar más anuncios)
         truncated_text = page_text[:20000] if len(page_text) > 20000 else page_text
@@ -646,14 +700,18 @@ async def scrape_with_stealth(url: str, search_term: str, openai_key: str, brows
             truncated_text += links_text
 
         # Guardar contenido para debug
-        with open('fotocasa_content_debug.txt', 'w', encoding='utf-8') as f:
-            f.write(f"URL: {nav_url if 'nav_url' in locals() else url}\n")
-            f.write(f"Longitud total texto: {len(page_text)}\n")
-            f.write(f"Enlaces encontrados: {len(links_info)}\n")
-            f.write(f"Longitud truncada: {len(truncated_text)}\n")
-            f.write("="*80 + "\n")
-            f.write(truncated_text)
-        print("📝 Contenido guardado en: fotocasa_content_debug.txt")
+        try:
+            debug_file = '/tmp/fotocasa_content_debug.txt'
+            with open(debug_file, 'w', encoding='utf-8') as f:
+                f.write(f"URL: {nav_url if 'nav_url' in locals() else url}\n")
+                f.write(f"Longitud total texto: {len(page_text)}\n")
+                f.write(f"Enlaces encontrados: {len(links_info)}\n")
+                f.write(f"Longitud truncada: {len(truncated_text)}\n")
+                f.write("="*80 + "\n")
+                f.write(truncated_text)
+            logger.info(f"📝 Contenido guardado en: {debug_file}")
+        except Exception as e:
+            logger.warning(f"   No se pudo guardar debug file: {e}")
 
         # Prompt que pide JSON estructurado
         search_context = f'Esta es una página de resultados de Fotocasa con viviendas en venta en: "{search_term}"\n' if search_term and search_term.strip() else ''
@@ -712,7 +770,7 @@ Reglas:
             if raw_response.endswith("```"):
                 raw_response = raw_response[:-3].strip()
 
-        print(f"✅ Análisis completado: {len(raw_response)} caracteres")
+        logger.info(f"✅ Análisis completado: {len(raw_response)} caracteres")
 
         # Intentar parsear JSON
         try:
@@ -721,14 +779,14 @@ Reglas:
             summary = parsed.get("summary", "")
             total_results = parsed.get("total_results", len(items))
 
-            print(f"📋 OpenAI extrajo: {len(items)} anuncios")
-            print(f"   Summary: {summary[:100]}..." if summary else "   Sin summary")
+            logger.info(f"📋 OpenAI extrajo: {len(items)} anuncios")
+            logger.info(f"   Summary: {summary[:100]}..." if summary else "   Sin summary")
 
             # Verificar que haya al menos algún resultado válido
             if not items and not summary:
-                print("⚠️  JSON válido pero sin resultados útiles")
+                logger.warning("⚠️  JSON válido pero sin resultados útiles")
                 if retry_count < MAX_RETRIES:
-                    print(f"⚠️  Reintentando análisis... (intento {retry_count + 1}/{MAX_RETRIES})")
+                    logger.warning(f"⚠️  Reintentando análisis... (intento {retry_count + 1}/{MAX_RETRIES})")
                     # Cleanup y reintentar
                     await page.close()
                     await context.close()
@@ -746,10 +804,10 @@ Reglas:
             content_plain = _build_plain_text(items, summary, total_results)
 
         except json.JSONDecodeError as json_err:
-            print(f"⚠️  No se pudo parsear JSON: {json_err}")
+            logger.warning(f"⚠️  No se pudo parsear JSON: {json_err}")
             # Si es el primer o segundo intento, reintentar
             if retry_count < MAX_RETRIES:
-                print(f"⚠️  Reintentando análisis... (intento {retry_count + 1}/{MAX_RETRIES})")
+                logger.warning(f"⚠️  Reintentando análisis... (intento {retry_count + 1}/{MAX_RETRIES})")
                 # Cleanup y reintentar
                 await page.close()
                 await context.close()
@@ -760,7 +818,7 @@ Reglas:
                     url, search_term, openai_key, browser, price_max, retry_count + 1
                 )
             else:
-                print(f"❌ JSON inválido después de {MAX_RETRIES} reintentos, usando texto plano")
+                logger.error(f"❌ JSON inválido después de {MAX_RETRIES} reintentos, usando texto plano")
                 content_plain = raw_response
                 content_html = f"<p>{raw_response}</p>"
 
@@ -773,7 +831,7 @@ Reglas:
         }
 
     except Exception as e:
-        print(f"❌ Error: {e}")
+        logger.error(f"❌ Error: {e}")
 
         # Cleanup antes de reintentar
         if page:
@@ -799,13 +857,13 @@ Reglas:
 
         # Reintentar si no se ha alcanzado el límite
         if retry_count < MAX_RETRIES:
-            print(f"⚠️  Reintentando en 3 segundos... (intento {retry_count + 1}/{MAX_RETRIES})")
+            logger.warning(f"⚠️  Reintentando en 3 segundos... (intento {retry_count + 1}/{MAX_RETRIES})")
             await asyncio.sleep(3)
             return await scrape_with_stealth(
                 url, search_term, openai_key, browser, price_max, retry_count + 1
             )
         else:
-            print(f"❌ Error definitivo después de {MAX_RETRIES} reintentos")
+            logger.error(f"❌ Error definitivo después de {MAX_RETRIES} reintentos")
             return {
                 "success": False,
                 "content": "",

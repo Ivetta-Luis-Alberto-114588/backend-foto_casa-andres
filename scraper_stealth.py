@@ -268,8 +268,16 @@ async def scrape_with_stealth(url: str, search_term: str, openai_key: str, brows
     try:
         playwright = await async_playwright().start()
 
-        # Control de headless vía env var (por defecto se mantiene False para desarrollo)
-        HEADLESS = os.getenv("HEADLESS", "false").lower() in ("1", "true", "yes")
+        # Control de headless vía env var.
+        # Comportamiento seguro en contenedores: si no existe DISPLAY se fuerza headless=True
+        headless_env = os.getenv("HEADLESS")
+        if headless_env is not None:
+            HEADLESS = headless_env.lower() in ("1", "true", "yes")
+        else:
+            # Si no hay DISPLAY (p.e. contenedor sin X), usar headless por defecto
+            HEADLESS = not bool(os.getenv("DISPLAY"))
+
+        print(f"[DEBUG] HEADLESS={HEADLESS} (HEADLESS env='{headless_env}', DISPLAY='{os.getenv('DISPLAY')}')")
 
         launch_args = [
             '--disable-blink-features=AutomationControlled',

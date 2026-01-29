@@ -188,6 +188,16 @@ docker build -t backend-python .
 docker run -p 3000:3000 --env-file .env backend-python
 ```
 
+## Despliegue en Contenedores / Coolify
+
+Si despliegas en Coolify u otro servicio de contenedores sin servidor X (como en Contabo), asegúrate de:
+
+- Establecer la variable de entorno `HEADLESS=true` en la configuración del servicio (Coolify -> Environment Variables).
+- El `Dockerfile` incluido ya ejecuta `playwright install chromium` y los paquetes del sistema necesarios; confirma que la imagen se construye correctamente.
+- Si necesitas depurar, revisa los logs y busca la línea de debug `HEADLESS=` que imprime el backend al arrancar.
+
+Ejemplo (en Coolify): añade `HEADLESS=true` al listado de environment variables antes de desplegar.
+
 ## Desactivar entorno virtual
 
 Cuando termines de trabajar:

@@ -360,15 +360,24 @@ async def scrape_with_stealth(url: str, search_term: str, openai_key: str, brows
         playwright = await async_playwright().start()
 
         # Control de headless vía env var.
-        # Comportamiento seguro en contenedores: si no existe DISPLAY se fuerza headless=True
-        headless_env = os.getenv("HEADLESS")
-        if headless_env is not None:
-            HEADLESS = headless_env.lower() in ("1", "true", "yes")
-        else:
-            # Si no hay DISPLAY (p.e. contenedor sin X), usar headless por defecto
-            HEADLESS = not bool(os.getenv("DISPLAY"))
+        # Preferir headless=False si está disponible (mejor para evitar detección de bots)
+        headless_env = os.getenv("HEADLESS", "").lower()
+        display_env = os.getenv("DISPLAY")
 
-        print(f"[DEBUG] HEADLESS={HEADLESS} (HEADLESS env='{headless_env}', DISPLAY='{os.getenv('DISPLAY')}')")
+        # Lógica: headless=False es mejor para evitar bot detection, pero necesita X server
+        if headless_env in ("false", "0", "no"):
+            HEADLESS = False
+            logger.info("[CONFIG] Usando headless=False (navegador gráfico virtual)")
+        elif display_env:
+            # Si DISPLAY está configurado, intentar headless=False aunque HEADLESS no esté explícito
+            HEADLESS = False
+            logger.info("[CONFIG] DISPLAY detectado, usando headless=False")
+        else:
+            # Sin DISPLAY, forzar headless=True
+            HEADLESS = True
+            logger.info("[CONFIG] Sin DISPLAY, usando headless=True")
+
+        logger.info(f"[DEBUG] HEADLESS={HEADLESS} (env='{headless_env}', DISPLAY='{display_env}')")
 
         launch_args = [
             '--disable-blink-features=AutomationControlled',
@@ -400,7 +409,8 @@ async def scrape_with_stealth(url: str, search_term: str, openai_key: str, brows
 
         # Si no se creó browser_obj (either not brave or brave not available), lanzar Chromium
         if browser_obj is None:
-            print("🌐 Lanzando Chromium...")
+            headless_mode = "HEADLESS" if HEADLESS else "HEADED"
+            logger.info(f"🌐 Lanzando Chromium ({headless_mode} mode)...")
             browser_obj = await playwright.chromium.launch(
                 headless=HEADLESS,
                 args=launch_args,
@@ -480,13 +490,13 @@ async def scrape_with_stealth(url: str, search_term: str, openai_key: str, brows
         # Crear página
         page = await context.new_page()
 
-        print(f"🥷 Navegando a {url} con STEALTH MODE usando {browser_name}...")
+        logger.info(f"🥷 Navegando a {url} con STEALTH MODE usando {browser_name}...")
 
         # Navegar con timeout generoso
         await page.goto(url, wait_until='networkidle', timeout=30000)
 
         # MANEJAR BANNER DE COOKIES / CONSENTIMIENTO GDPR
-        print("🍪 Buscando banner de cookies...")
+        logger.info("🍪 Buscando banner de cookies...")
         await asyncio.sleep(random.uniform(1, 2))
 
         cookie_accepted = False

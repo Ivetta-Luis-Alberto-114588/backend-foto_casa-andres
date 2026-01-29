@@ -18,7 +18,10 @@ import os
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
 from dotenv import load_dotenv
+import pathlib
 
 # Cargar variables de entorno
 load_dotenv()
@@ -357,22 +360,46 @@ Browser-use ejecuta IA localmente en tu servidor para:
     }
 
 
-def send_email(to: str, subject: str, body: str, html: str = None) -> bool:
+def send_email(to: str, subject: str, body: str, html: str = None, attachments: list = None) -> bool:
     """
-    Envía email usando SMTP
+    Envía email usando SMTP con soporte para adjuntos
+    attachments: lista de rutas a archivos para adjuntar
     """
     try:
-        msg = MIMEMultipart('alternative')
+        msg = MIMEMultipart('mixed')
         msg['From'] = os.getenv('EMAIL_USER')
         msg['To'] = to
         msg['Subject'] = subject
 
+        # Crear parte de contenido (texto + html)
+        msg_alternative = MIMEMultipart('alternative')
+        msg.attach(msg_alternative)
+
         # Adjuntar texto plano
-        msg.attach(MIMEText(body, 'plain'))
+        msg_alternative.attach(MIMEText(body, 'plain'))
 
         # Adjuntar HTML si está disponible
         if html:
-            msg.attach(MIMEText(html, 'html'))
+            msg_alternative.attach(MIMEText(html, 'html'))
+
+        # Adjuntar archivos si existen
+        if attachments:
+            for file_path in attachments:
+                try:
+                    path = pathlib.Path(file_path)
+                    if path.exists():
+                        # Leer archivo
+                        with open(path, 'rb') as attachment:
+                            part = MIMEBase('application', 'octet-stream')
+                            part.set_payload(attachment.read())
+                            encoders.encode_base64(part)
+                            part.add_header('Content-Disposition', f'attachment; filename= {path.name}')
+                            msg.attach(part)
+                        print(f"   ✓ Adjunto agregado: {path.name} ({path.stat().st_size} bytes)")
+                    else:
+                        print(f"   ⚠️  Archivo no encontrado: {file_path}")
+                except Exception as e:
+                    print(f"   ❌ Error adjuntando {file_path}: {e}")
 
         # Conectar y enviar
         with smtplib.SMTP(os.getenv('EMAIL_HOST'), int(os.getenv('EMAIL_PORT', 587))) as server:
@@ -465,6 +492,43 @@ def scrape():
                 url, search_term, os.getenv("OPENAI_API_KEY"), browser_choice,
                 price_max=price_max
             ))
+
+        # Enviar email automático con archivos de debug si existen
+        try:
+            debug_files = [
+                '/tmp/fotocasa_search_failed.png',
+                '/tmp/fotocasa_search_failed.html',
+                '/tmp/fotocasa_low_content.html',
+                '/tmp/fotocasa_results.png',
+                '/tmp/fotocasa_content_debug.txt',
+                '/tmp/captcha_detected.png',
+            ]
+
+            # Filtrar solo los archivos que existen
+            existing_files = [f for f in debug_files if pathlib.Path(f).exists()]
+
+            if existing_files and os.getenv('EMAIL_USER'):
+                print(f"\n📎 Enviando {len(existing_files)} archivos de debug por email...")
+                debug_subject = f"[DEBUG] Scraping de {search_term or 'Fotocasa'} - {len(existing_files)} archivos"
+                debug_body = f"""Adjuntos de la ejecución de scraping:
+
+URL: {url}
+Búsqueda: {search_term or 'N/A'}
+Resultado: {'Exitoso' if result.get('success') else 'Error/Bloqueado'}
+Archivos: {len(existing_files)}
+
+Archivos adjuntos:
+{chr(10).join([f'- {pathlib.Path(f).name}' for f in existing_files])}
+"""
+                send_email(
+                    os.getenv('EMAIL_USER'),
+                    debug_subject,
+                    debug_body,
+                    attachments=existing_files
+                )
+                print("✓ Email de debug enviado")
+        except Exception as e:
+            print(f"⚠️  No se pudo enviar email de debug: {e}")
 
         return jsonify(result)
 
